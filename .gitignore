@@ -1,0 +1,6 @@
+# Środowisko testowe jest opcjonalne — aplikacja nadal działa bez instalacji.
+node_modules/
+package-lock.json
+test-results/
+playwright-report/
+.DS_Store

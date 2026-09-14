@@ -1,6 +1,7 @@
 # Analiza i plan ulepszeń CyberPlayer STUDIO
 
 **Data przeglądu:** 2026-09-14  
+**Ostatnia aktualizacja:** 2026-09-15 — po wdrożeniu Build 2 (manifest `project.json`) i Build 3 (walidacja, `duration`, eksport konfiguracji, drag and drop, testy)
 **Analizowana wersja:** `demorecorder.html` po pierwszych testach  
 **Charakter projektu:** samodzielna aplikacja HTML/CSS/JS, bez zależności zewnętrznych
 
@@ -81,14 +82,14 @@ katalog użytkownika
 
 ## 4. Zalecany plan rozwoju
 
-### Priorytet P0 — bezpieczeństwo eksportu
+### Priorytet P0 — bezpieczeństwo eksportu — zrealizowane w Build 3
 
 - wyświetlać przed nagraniem szacowaną rozdzielczość, FPS i wybrany kodek,
 - dodać kontrolę jakości `low / medium / high`, zamiast stałego bitrate'u,
 - dodać test końcowy: czy Blob ma ścieżkę audio i video oraz nie jest pusty,
 - zachować informację o ograniczeniach kodeka w nazwie/statusie pliku.
 
-### Priorytet P1 — model projektu
+### Priorytet P1 — model projektu — zrealizowane w Build 2/3
 
 - opcjonalny `project.json` z polami `audio`, `scenes`, `cues`, `theme` i `render`;
 - scena powinna mieć `image`, `start` lub `duration`, opcjonalny efekt przejścia;
@@ -109,14 +110,14 @@ Przykładowy kierunek formatu:
 }
 ```
 
-### Priorytet P1 — kontrola artystyczna
+### Priorytet P1 — kontrola artystyczna — częściowo zrealizowane w Build 2/3
 
 - parametry intensywności ASCII, CRT, winiety, overlayu i basu,
 - wybór krzywej przejścia oraz długości crossfade,
 - opcjonalne beat detection z `AnalyserNode` i krótkie błyski/zakłócenia na transjentach,
 - możliwość wyłączenia terminala lub equalizera przed nagraniem.
 
-### Priorytet P2 — ergonomia
+### Priorytet P2 — ergonomia — częściowo zrealizowane w Build 3
 
 - drag-and-drop katalogu/plików,
 - podgląd listy znalezionych plików i ostrzeżenia o duplikatach/braku audio,
@@ -124,7 +125,7 @@ Przykładowy kierunek formatu:
 - przyciski „snapshot PNG” i „reset projektu”,
 - panel diagnostyczny z FPS, rozdzielczością canvasu i stanem AudioContext.
 
-### Priorytet P2 — jakość projektu
+### Priorytet P2 — jakość projektu — częściowo zrealizowane w Build 3
 
 - rozdzielenie kodu na `src/` i małe moduły bez utraty wersji standalone,
 - testy parsera LRC oraz testy jednostek formatowania czasu,
@@ -141,10 +142,33 @@ Przykładowy kierunek formatu:
 - [x] zmiana katalogu zwalnia stare zasoby i nie miesza projektów,
 - [x] recorder wybiera dostępny kodek i kończy pracę razem z audio,
 - [x] nie ma błędów składni JavaScript (`node --check`),
+- [x] konfiguracja scen z dokładnymi timestampami (`project.json`: `start`, `duration`, `transition`, `enabled`),
+- [x] walidacja manifestu rozróżnia błędny JSON, manifest bez plików, manifest bez scen i manifest kompletny,
+- [x] brakujący plik audio/LRC/obraz jest raportowany i nie przerywa działania aplikacji,
+- [x] eksport bieżącej konfiguracji do `project.json` z poziomu UI,
+- [x] drag and drop katalogu lub plików korzysta z tego samego pipeline'u co folder picker,
+- [x] testy: parsera LRC, parsera manifestu, walidacji scen, formatowania czasu, statyczna struktura HTML i testy integracyjne pipeline'u,
 - [ ] eksport MP4,
-- [ ] konfiguracja scen z dokładnymi timestampami,
-- [ ] automatyczny test w prawdziwej przeglądarce.
+- [ ] automatyczny test w prawdziwej przeglądarce (szkielet jest gotowy i pomija się przy braku Playwrighta).
 
-## 6. Rekomendacja
+## 6. Co wniosły Build 2 i Build 3
 
-Obecny prototyp nadaje się do tworzenia krótkich klipów lyric-video i wizualizacji do publikacji po konwersji WebM. Największy zwrot z dalszej pracy da wprowadzenie `project.json` z dokładnym timeline'em oraz panelu parametrów renderera. Dopiero później warto rozbudowywać aplikację o playlistę, wielościeżkowy montaż lub eksport MP4 — te funkcje zwiększą złożoność bardziej niż poprawią podstawowy, demoscenowy workflow.
+### Build 2 — model projektu
+
+- opcjonalny manifest `project.json` z polami `audio`, `cues`, `theme`, `equalizer`, `scenes` i `render`,
+- sceny z dokładnymi timestampami (`start`, `duration`), przejściami `crossfade` / `cut` i wyłącznikiem `enabled`,
+- parametry renderowania sterowane z manifestu: `fps`, `videoBitrate`, `audioBitrate`, `asciiIntensity`, `overlay`, `crt`, `transitionSeconds`, `showTerminal`, `showEqualizer`,
+- fallback do starego trybu — bez manifestu aplikacja nadal sortuje obrazy i dzieli je na długość audio.
+
+### Build 3 — dokończenie i przygotowanie do użycia produkcyjnego
+
+- **walidacja manifestu:** wersja schematu (`version: 1`), rozróżnienie błędnego JSON, poprawnego JSON bez plików, manifestu bez scen i manifestu kompletnego; lista brakujących plików w statusie oraz w HUD; brak jednego obrazu nie przerywa odtwarzania,
+- **rozszerzony timeline:** `start` + `duration` wyznaczają zakres, brakujące wartości dostają przewidywalny fallback, sceny nieposortowane są stabilnie porządkowane, `enabled: false` wyłącza scenę,
+- **eksport konfiguracji:** przycisk `EKSPORT PROJECT.JSON` zapisuje audio, cues, motyw, equalizer, sceny i ustawienia renderowania, także w trybie automatycznym,
+- **drag and drop:** katalog lub zestaw plików można upuścić na aplikację; nieobsługiwane pliki są odrzucane bez błędu krytycznego, a ich liczba pojawia się w statusie,
+- **ergonomia eksportu wideo:** jakość LOW / MEDIUM / HIGH, podgląd rozdzielczości, FPS i kodeka w trakcie nagrywania oraz raport rozmiaru i liczby ścieżek po zapisie,
+- **testy:** 59 testów w `node:test` (parser LRC, parser i walidacja manifestu, walidacja scen, formatowanie czasu, struktura HTML, integracja pipeline'u ładowania, drag and drop) plus opcjonalny smoke test w Playwright.
+
+## 7. Rekomendacja
+
+Aplikacja jest gotowa do użycia produkcyjnego do krótkich klipów lyric-video: manifest `project.json` daje dokładny timeline, eksport konfiguracji zamyka obieg między podglądem a manifestem, a drag and drop skraca start pracy. Kolejny zwrot z pracy da edycja timeline'u bezpośrednio w UI (przesuwanie i przycinanie scen zamiast ręcznej edycji JSON) oraz eksport MP4 przez `WebCodecs` albo konwersję FFmpeg. Rozbudowa o playlistę i wielościeżkowy montaż ma sens dopiero po tych dwóch krokach — same w sobie zwiększają złożoność bardziej niż poprawiają podstawowy, demoscenowy workflow.

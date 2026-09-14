@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "audio": "ghost_ai.mp3",
+  "cues": "ghost_ai.lrc",
+  "theme": "cyan",
+  "equalizer": 1,
+  "scenes": [
+    { "image": "01_intro.jpg", "start": 0, "duration": 18, "transition": "crossfade" },
+    { "image": "02_signal.png", "start": 18, "duration": 20, "transition": "crossfade" },
+    { "image": "03_city.webp", "start": 38, "duration": 22, "transition": "cut" },
+    { "image": "04_mirror.jpg", "start": 60, "duration": 20, "transition": "crossfade" },
+    { "image": "05_grid.png", "start": 80, "duration": 20, "transition": "crossfade" },
+    { "image": "06_emotions.jpg", "start": 100, "duration": 25, "transition": "crossfade" },
+    { "image": "07_tear.png", "start": 125, "duration": 20, "transition": "crossfade" },
+    { "image": "08_keyboard.jpg", "start": 145, "duration": 20, "transition": "cut" },
+    { "image": "09_embrace.png", "start": 165, "duration": 20, "transition": "crossfade" },
+    { "image": "10_signal_lost.jpg", "start": 185, "duration": 20, "transition": "crossfade" }
+  ],
+  "render": {
+    "fps": 60,
+    "videoBitrate": 12000000,
+    "audioBitrate": 192000,
+    "asciiIntensity": 1,
+    "overlay": 0.9,
+    "crt": 1,
+    "transitionSeconds": 1.2,
+    "showTerminal": true,
+    "showEqualizer": true
+  }
+}

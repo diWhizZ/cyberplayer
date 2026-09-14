@@ -91,8 +91,11 @@ Aktualnym źródłem kodu jest plik [`demorecorder.html`](./demorecorder.html). 
 
 Implementacja obejmuje:
 
-* ładowanie katalogu z audio, grafikami i opcjonalnym plikiem `.lrc`,
-* naturalne sortowanie scen (`01_...`, `02_...`),
+* ładowanie katalogu z audio, grafikami, opcjonalnym plikiem `.lrc` i opcjonalnym manifestem `project.json` (przyciskiem albo przeciągnięciem katalogu),
+* manifest `project.json` z dokładnym timeline'em scen (`start`, `duration`, `transition`, `enabled`) oraz parametrami renderowania — wzór w `project.example.json`,
+* walidację manifestu i raportowanie brakujących plików w statusie oraz w HUD,
+* eksport bieżącej konfiguracji do `project.json` przyciskiem `EKSPORT PROJECT.JSON`,
+* naturalne sortowanie scen (`01_...`, `02_...`) jako fallback, gdy nie ma manifestu,
 * ASCII core reagujący na bas, trzy tryby equalizera, CRT scanlines i przejścia obrazów,
 * motywy CYAN / AMBER / GREEN,
 * terminal HUD synchronizowany z cue,
@@ -106,7 +109,7 @@ Pełna analiza, ograniczenia i plan rozwoju znajdują się w [`ANALIZA-I-ULEPSZE
 1. **Wymagania systemowe do zrzutów wideo:** Komputer z w miarę nowoczesną przeglądarką (najlepiej Chrome/Brave dla najwyższego wsparcia VP9 MediaRecorder). 
 2. **Struktura plików w projekcie:** Zawsze trzymaj wszystkie materiały w jednym folderze.
    
-   * Wideo ładuje się alfabetycznie: `01_intro.jpg`, `02_verse.jpg` itd.
+   * Wideo ładuje się alfabetycznie: `01_intro.jpg`, `02_verse.jpg` itd. Jeśli dodasz `project.json`, sceny dostają dokładne czasy (`start` / `duration`) — wzór znajdziesz w `project.example.json`.
    
    * Plik tekstowy (zsynchronizowany np. w Megalobiz lub Riverside) musi mieć rozszerzenie `.lrc`.
 3. **Nagrywanie czystego obrazu bez panelu sterowania:**
@@ -115,6 +118,8 @@ Pełna analiza, ograniczenia i plan rozwoju znajdują się w [`ANALIZA-I-ULEPSZE
    
    * Opcjonalnie kliknij `FULLSCREEN`; nagrywane jest płótno wizualizatora, więc panel sterowania HTML nie trafia do pliku.
    
+   * Wybierz jakość `LOW` / `MEDIUM` / `HIGH` — status pokaże rozdzielczość, FPS i kodek nagrania.
+
    * Kliknij `REC VIDEO`. Nagrywanie kończy się automatycznie po zakończeniu audio albo po ponownym kliknięciu przycisku.
 
    * Wynik jest zapisywany jako `WebM`; do publikacji wymagającej MP4 użyj późniejszej konwersji, np. FFmpeg.

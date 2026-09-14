@@ -44,7 +44,7 @@ button, input { font: inherit; }
 .top-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 #brand { pointer-events: auto; text-shadow: 0 0 10px var(--main); }
 #brand h1 { font-size: 14px; letter-spacing: 5px; text-transform: uppercase; }
-#status { margin-top: 5px; font-size: 9px; letter-spacing: 2px; opacity: 0.8; }
+#status { margin-top: 5px; font-size: 9px; letter-spacing: 2px; opacity: 0.8; word-break: break-word; }
 .btn-group { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .btn-group span { font-size: 9px; opacity: 0.6; align-self: center; margin-right: 5px; }
 .controls { display: flex; gap: 8px; pointer-events: auto; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -98,6 +98,27 @@ input[type="file"] { display: none; }
 #progress:focus-visible { outline: 2px solid var(--secondary); outline-offset: 3px; }
 #progressFill { height: 100%; width: 0%; background: var(--main); box-shadow: 0 0 10px var(--main); pointer-events: none; transition: width 0.1s linear; }
 #time { min-width: 110px; text-align: right; font-size: 11px; font-weight: bold; letter-spacing: 2px; }
+#dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(0, 8, 12, 0.88);
+  border: 3px dashed var(--main);
+  color: var(--main);
+  text-shadow: 0 0 10px var(--main);
+  letter-spacing: 3px;
+  font-size: 15px;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 20px;
+}
+#dropzone small { font-size: 10px; opacity: 0.7; letter-spacing: 2px; text-transform: none; }
+body.dragging #dropzone { display: flex; }
 @media (max-width: 760px) {
   body { overflow: auto; }
   #topbar { left: 8px; right: 8px; top: 8px; padding: 10px; gap: 10px; }
@@ -130,12 +151,19 @@ input[type="file"] { display: none; }
         <button class="btn" data-eq="2">SYMETRIA</button>
         <button class="btn" data-eq="3">PUNKTY</button>
       </div>
+      <div class="btn-group">
+        <span>JAKOŚĆ:</span>
+        <button class="btn" data-quality="low">LOW</button>
+        <button class="btn active" data-quality="medium">MEDIUM</button>
+        <button class="btn" data-quality="high">HIGH</button>
+      </div>
     </div>
     <div class="controls">
       <button class="btn btn-rec" id="btn-rec">● REC VIDEO</button>
       <button class="btn" id="btn-fullscreen">⛶ FULLSCREEN</button>
+      <button class="btn" id="btn-export" style="border-color:#00ff88; color:#00ff88;">💾 EKSPORT PROJECT.JSON</button>
       <button class="btn" id="loadFolder" style="border-color:#ffaa00; color:#ffaa00;">📂 WSKAŻ KATALOG PROJEKTU</button>
-      <input id="folderInput" type="file" webkitdirectory directory multiple accept="audio/*,image/*,.lrc">
+      <input id="folderInput" type="file" webkitdirectory directory multiple accept="audio/*,image/*,.lrc,.json">
     </div>
   </div>
   <div class="player-row">
@@ -148,124 +176,501 @@ input[type="file"] { display: none; }
     <div id="time">00:00 / 00:00</div>
   </div>
 </div>
+<div id="dropzone" aria-hidden="true">
+  <div>⬇ UPUSUĆ KATALOG LUB PLIKI</div>
+  <small>audio · obrazy · .lrc · project.json</small>
+</div>
 <script>
 "use strict";
 
-// --- 1. MOTYWY I EQUALIZER ---
+/* CYBERPLAYER-CORE-START
+   Czysta logika aplikacji: parsery i walidacja. Bez DOM i bez API przeglądarki,
+   dzięki czemu testy w Node wycinają ten blok i uruchamiają go samodzielnie. */
+const CyberCore = (() => {
+  const PROJECT_SCHEMA_VERSION = 1;
+  const DEFAULT_SCENE_SECONDS = 8;
+  const TRANSITIONS = ["crossfade", "cut"];
+  const THEMES = ["cyan", "amber", "green"];
+  const RANGE = {
+    fps: [1, 120],
+    videoBitrate: [250000, 80000000],
+    audioBitrate: [32000, 512000],
+    asciiIntensity: [0, 2],
+    overlay: [0, 1],
+    crt: [0, 1],
+    transitionSeconds: [0, 10]
+  };
+  const RENDER_DEFAULTS = {
+    fps: 60,
+    videoBitrate: 12000000,
+    audioBitrate: 192000,
+    asciiIntensity: 1,
+    overlay: 0.9,
+    crt: 1,
+    transitionSeconds: 1.2,
+    showTerminal: true,
+    showEqualizer: true
+  };
+  const AUDIO_EXT = /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|weba?)$/i;
+  const IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i;
+  const CUE_EXT = /\.lrc$/i;
+  const PROJECT_NAME = /^project\.json$/i;
+  const LRC_META = /^(?:ar|ti|al|by|re|ve|au|length|offset)\s*:/i;
+
+  function fileBaseName(name) {
+    const value = String(name == null ? "" : name);
+    const index = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+    return index >= 0 ? value.slice(index + 1) : value;
+  }
+
+  function toFiniteNumber(value, fallback) {
+    const alt = arguments.length > 1 ? fallback : null;
+    if (value === null || value === undefined || value === "") return alt;
+    const number = typeof value === "number" ? value : Number(String(value).trim());
+    return Number.isFinite(number) ? number : alt;
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    const number = toFiniteNumber(value, NaN);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, number));
+  }
+
+  function roundTo(value, digits) {
+    const number = toFiniteNumber(value, NaN);
+    const precision = Number.isFinite(digits) ? digits : 2;
+    if (!Number.isFinite(number)) return 0;
+    const factor = Math.pow(10, precision);
+    return Math.round(number * factor) / factor;
+  }
+
+  function firstNonEmptyString() {
+    for (let i = 0; i < arguments.length; i++) {
+      const value = arguments[i];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  }
+
+  function isAudioFile(file) {
+    if (!file) return false;
+    return /^audio\//i.test(String(file.type || "")) || AUDIO_EXT.test(String(file.name || ""));
+  }
+  function isImageFile(file) {
+    if (!file) return false;
+    return /^image\//i.test(String(file.type || "")) || IMAGE_EXT.test(String(file.name || ""));
+  }
+  function isCueFile(file) {
+    if (!file) return false;
+    return CUE_EXT.test(String(file.name || ""));
+  }
+  function isProjectFile(file) {
+    if (!file) return false;
+    return PROJECT_NAME.test(fileBaseName(file.name));
+  }
+
+  function formatTime(value) {
+    const number = toFiniteNumber(value, NaN);
+    if (!Number.isFinite(number) || number < 0) return "00:00";
+    const total = Math.floor(number);
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    const minuteLabel = minutes > 99 ? String(minutes) : String(minutes).padStart(2, "0");
+    return `${minuteLabel}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  // --- PARSER LRC ---
+  function parseLRC(lrcText) {
+    const timeTag = /\[(\d{1,3}):([0-5]\d)(?:[\.:](\d{1,3}))?\]/g;
+    const parsed = [];
+    const lines = String(lrcText == null ? "" : lrcText).replace(/^﻿/, "").split(/\r?\n/);
+
+    for (const rawLine of lines) {
+      timeTag.lastIndex = 0;
+      const tags = [];
+      let match;
+      while ((match = timeTag.exec(rawLine)) !== null) tags.push(match);
+      const text = rawLine.replace(timeTag, "").trim();
+      if (!tags.length || !text || LRC_META.test(text)) continue;
+
+      for (const tag of tags) {
+        const fraction = tag[3] ? Number(`0.${tag[3]}`) : 0;
+        parsed.push({
+          t: Number.parseInt(tag[1], 10) * 60 + Number.parseInt(tag[2], 10) + (Number.isFinite(fraction) ? fraction : 0),
+          line: text,
+          haiku: ""
+        });
+      }
+    }
+
+    parsed.sort((a, b) => a.t - b.t);
+    return parsed;
+  }
+
+  // --- USTAWIENIA RENDEROWANIA ---
+  function normalizeRender(raw) {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const render = {};
+    for (const key of Object.keys(RENDER_DEFAULTS)) {
+      const [min, max] = RANGE[key] || [0, 1];
+      render[key] = clampNumber(source[key], min, max, RENDER_DEFAULTS[key]);
+    }
+    render.fps = Math.round(render.fps);
+    render.videoBitrate = Math.round(render.videoBitrate);
+    render.audioBitrate = Math.round(render.audioBitrate);
+    render.showTerminal = source.showTerminal === undefined ? true : source.showTerminal !== false;
+    render.showEqualizer = source.showEqualizer === undefined ? true : source.showEqualizer !== false;
+    return render;
+  }
+
+  function normalizeTheme(value, fallback) {
+    const name = String(value == null ? "" : value).trim().toLowerCase();
+    return THEMES.indexOf(name) >= 0 ? name : (fallback || "");
+  }
+
+  function normalizeEqualizer(value, fallback) {
+    const mode = Math.round(toFiniteNumber(value, NaN));
+    if (mode >= 1 && mode <= 3) return mode;
+    return Number.isFinite(fallback) ? fallback : 0;
+  }
+
+  // --- MANIFEST project.json ---
+  function manifestResult(partial) {
+    return Object.assign({
+      ok: false,
+      reason: "invalid-json",
+      error: "",
+      version: null,
+      manifest: null,
+      warnings: []
+    }, partial || {});
+  }
+
+  function parseProjectManifest(text) {
+    const raw = String(text == null ? "" : text).replace(/^﻿/, "").trim();
+    if (!raw) return manifestResult({ reason: "invalid-json", error: "Manifest jest pusty." });
+
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (error) {
+      return manifestResult({ reason: "invalid-json", error: error && error.message ? error.message : "Błąd składni JSON." });
+    }
+
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return manifestResult({ reason: "invalid-shape", error: "Manifest musi być obiektem JSON." });
+    }
+
+    const warnings = [];
+    const declaredVersion = toFiniteNumber(data.version, null);
+    if (declaredVersion === null) {
+      warnings.push('Brak pola "version" — przyjęto schemat 1.');
+    } else if (declaredVersion !== PROJECT_SCHEMA_VERSION) {
+      warnings.push(`Nieznana wersja manifestu (${declaredVersion}) — przyjęto schemat ${PROJECT_SCHEMA_VERSION}.`);
+    }
+
+    const manifest = {
+      version: declaredVersion === null ? PROJECT_SCHEMA_VERSION : declaredVersion,
+      audio: firstNonEmptyString(data.audio),
+      cues: firstNonEmptyString(data.cues, data.lrc),
+      theme: normalizeTheme(data.theme, ""),
+      equalizer: normalizeEqualizer(data.equalizer, 0),
+      scenes: Array.isArray(data.scenes) ? data.scenes : [],
+      render: normalizeRender(data.render)
+    };
+    if (data.theme !== undefined && !manifest.theme) warnings.push(`Nieznany motyw "${data.theme}" — pozostawiono bieżący.`);
+
+    const hasReferences = Boolean(manifest.audio || manifest.cues || manifest.scenes.length);
+    if (!hasReferences) {
+      warnings.push("Manifest nie wskazuje audio, LRC ani scen — użyto trybu automatycznego.");
+      return manifestResult({ ok: true, reason: "empty-manifest", version: manifest.version, manifest, warnings });
+    }
+    if (!manifest.scenes.length) {
+      warnings.push("Manifest nie zawiera scen — obrazy rozłożono automatycznie.");
+      return manifestResult({ ok: true, reason: "no-scenes", version: manifest.version, manifest, warnings });
+    }
+
+    const brokenScenes = manifest.scenes.filter(scene => !scene || typeof scene !== "object" || Array.isArray(scene) || !firstNonEmptyString(scene.image, scene.src, scene.file)).length;
+    if (brokenScenes === manifest.scenes.length) {
+      warnings.push("Żadna scena w manifeście nie ma poprawnego pola \"image\" — użyto trybu automatycznego.");
+      manifest.scenes = [];
+      return manifestResult({ ok: true, reason: "no-scenes", version: manifest.version, manifest, warnings });
+    }
+
+    return manifestResult({ ok: true, reason: "ok", version: manifest.version, manifest, warnings });
+  }
+
+  // --- TIMELINE SCEN ---
+  function buildSceneTimeline(rawScenes, options) {
+    const opts = options || {};
+    const defaultSeconds = clampNumber(opts.defaultSceneSeconds, 0.1, 600, DEFAULT_SCENE_SECONDS);
+    const audioDuration = clampNumber(opts.audioDuration, 0, Number.MAX_SAFE_INTEGER, 0);
+    const warnings = [];
+
+    if (!Array.isArray(rawScenes)) return { scenes: [], warnings: ['Brak listy "scenes" w manifeście — użyto trybu automatycznego.'] };
+
+    const prepared = [];
+    rawScenes.forEach((raw, index) => {
+      const label = `#${index + 1}`;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        warnings.push(`Scena ${label} nie jest obiektem — pominięto.`);
+        return;
+      }
+      if (raw.enabled === false) {
+        warnings.push(`Scena ${label} jest wyłączona (enabled: false) — pominięto.`);
+        return;
+      }
+      const image = firstNonEmptyString(raw.image, raw.src, raw.file);
+      if (!image) {
+        warnings.push(`Scena ${label} nie ma pola "image" — pominięto.`);
+        return;
+      }
+
+      let start = toFiniteNumber(raw.start, null);
+      if (start !== null && start < 0) {
+        warnings.push(`Scena ${label} ma ujemny "start" — przyjęto 0.`);
+        start = 0;
+      }
+      let duration = toFiniteNumber(raw.duration, null);
+      if (duration !== null && duration <= 0) {
+        warnings.push(`Scena ${label} ma "duration" <= 0 — zignorowano.`);
+        duration = null;
+      }
+
+      let transition = "crossfade";
+      if (typeof raw.transition === "string" && raw.transition.trim()) {
+        const name = raw.transition.trim().toLowerCase();
+        if (TRANSITIONS.indexOf(name) >= 0) transition = name;
+        else {
+          transition = "crossfade";
+          warnings.push(`Scena ${label} ma nieznane przejście "${name}" — użyto crossfade.`);
+        }
+      }
+
+      if (start === null && duration === null) {
+        warnings.push(`Scena ${label} (${image}) nie ma "start" ani "duration" — użyto ${roundTo(defaultSeconds, 1)} s.`);
+      }
+
+      prepared.push({ image, start, duration, transition, index, label });
+    });
+
+    prepared.sort((a, b) => {
+      const aStart = a.start === null ? Number.POSITIVE_INFINITY : a.start;
+      const bStart = b.start === null ? Number.POSITIVE_INFINITY : b.start;
+      if (aStart !== bStart) return aStart - bStart;
+      return a.index - b.index;
+    });
+
+    const scenes = [];
+    let cursor = 0;
+    prepared.forEach((item, position) => {
+      const start = item.start !== null ? item.start : cursor;
+      let end;
+      if (item.duration !== null) {
+        end = start + item.duration;
+      } else {
+        const next = prepared[position + 1];
+        if (next && next.start !== null && next.start > start) end = next.start;
+        else if (audioDuration > 0 && position === prepared.length - 1) end = audioDuration;
+        else end = start + defaultSeconds;
+      }
+      if (!(end > start)) {
+        end = start + defaultSeconds;
+        warnings.push(`Scena ${item.label} ma pusty zakres czasu — użyto ${roundTo(defaultSeconds, 1)} s.`);
+      }
+      scenes.push({
+        image: item.image,
+        start,
+        end,
+        duration: end - start,
+        transition: item.transition,
+        sourceIndex: item.index,
+        label: item.label
+      });
+      cursor = Math.max(cursor, end);
+    });
+
+    return { scenes, warnings };
+  }
+
+  // --- MAPOWANIE MANIFESTU NA PLIKI ---
+  function resolveManifestFiles(manifest, files) {
+    const list = Array.isArray(files) ? files : Array.from(files || []);
+    const source = manifest && typeof manifest === "object" ? manifest : {};
+    const scenes = Array.isArray(source.scenes) ? source.scenes : [];
+    const byName = new Map();
+    const duplicates = new Set();
+    const missing = [];
+    const warnings = [];
+
+    for (const file of list) {
+      const key = fileBaseName(file && file.name).toLowerCase();
+      if (!key) continue;
+      if (byName.has(key) && byName.get(key).name !== file.name) duplicates.add(fileBaseName(file.name));
+      if (!byName.has(key)) byName.set(key, file);
+    }
+
+    const findFile = name => {
+      const key = firstNonEmptyString(name);
+      if (!key) return null;
+      return byName.get(fileBaseName(key).toLowerCase()) || null;
+    };
+
+    const audioFile = findFile(source.audio);
+    if (source.audio && !audioFile) missing.push({ role: "audio", name: source.audio });
+    const cueFile = findFile(source.cues);
+    if (source.cues && !cueFile) missing.push({ role: "cues", name: source.cues });
+
+    const sceneMatches = scenes.map(scene => {
+      const name = firstNonEmptyString(scene && scene.image);
+      const file = findFile(name);
+      if (name && !file) missing.push({ role: "scene", name });
+      return Object.assign({}, scene, { file });
+    });
+
+    for (const name of duplicates) warnings.push(`Zduplikowana nazwa pliku: ${name} — użyto pierwszego.`);
+
+    return { audioFile, cueFile, scenes: sceneMatches, missing, warnings };
+  }
+
+  function findFileByName(files, name) {
+    const result = resolveManifestFiles({ audio: name, cues: "", scenes: [] }, files);
+    return result.audioFile;
+  }
+
+  // --- EKSPORT MANIFESTU ---
+  function serializeProject(project) {
+    const source = project && typeof project === "object" ? project : {};
+    const scenes = (Array.isArray(source.scenes) ? source.scenes : []).map(scene => {
+      const entry = { image: firstNonEmptyString(scene && scene.image) };
+      const start = toFiniteNumber(scene && scene.start, 0);
+      entry.start = roundTo(Math.max(0, start), 2);
+      const duration = toFiniteNumber(scene && scene.duration, null);
+      if (duration !== null && duration > 0) entry.duration = roundTo(duration, 2);
+      const transition = String((scene && scene.transition) || "").trim().toLowerCase();
+      if (transition === "cut") entry.transition = "cut";
+      if (scene && scene.enabled === false) entry.enabled = false;
+      return entry;
+    });
+
+    const output = {
+      version: PROJECT_SCHEMA_VERSION,
+      audio: firstNonEmptyString(source.audio),
+      cues: firstNonEmptyString(source.cues),
+      theme: normalizeTheme(source.theme, "cyan") || "cyan",
+      equalizer: normalizeEqualizer(source.equalizer, 1) || 1,
+      scenes,
+      render: normalizeRender(source.render)
+    };
+    return `${JSON.stringify(output, null, 2)}\n`;
+  }
+
+  return {
+    PROJECT_SCHEMA_VERSION,
+    DEFAULT_SCENE_SECONDS,
+    TRANSITIONS,
+    THEMES,
+    RENDER_DEFAULTS,
+    fileBaseName,
+    toFiniteNumber,
+    clampNumber,
+    roundTo,
+    formatTime,
+    parseLRC,
+    normalizeRender,
+    normalizeTheme,
+    normalizeEqualizer,
+    parseProjectManifest,
+    buildSceneTimeline,
+    resolveManifestFiles,
+    findFileByName,
+    serializeProject,
+    isAudioFile,
+    isImageFile,
+    isCueFile,
+    isProjectFile
+  };
+})();
+/* CYBERPLAYER-CORE-END */
+
+if (typeof window !== "undefined") window.CyberCore = CyberCore;
+
+const core = CyberCore;
+const { formatTime, parseLRC, parseProjectManifest, buildSceneTimeline, resolveManifestFiles, findFileByName, serializeProject, normalizeRender, isAudioFile, isImageFile, isCueFile, isProjectFile, fileBaseName, clampNumber } = core;
+
+// --- 1. MOTYWY, EQUALIZER, JAKOŚĆ ---
 const THEMES = {
   cyan: { main: "#00ffcc", secondary: "#ff0066", bg: "rgb(2, 0, 8)", glow: "rgba(0, 255, 204, 0.6)" },
   amber: { main: "#ffaa00", secondary: "#ff3300", bg: "rgb(10, 3, 0)", glow: "rgba(255, 170, 0, 0.6)" },
   green: { main: "#38ff70", secondary: "#b5ff00", bg: "rgb(0, 8, 2)", glow: "rgba(56, 255, 112, 0.6)" }
 };
+const QUALITY_PRESETS = {
+  low: { fps: 30, videoBitrate: 4000000, audioBitrate: 128000 },
+  medium: { fps: 60, videoBitrate: 12000000, audioBitrate: 192000 },
+  high: { fps: 60, videoBitrate: 24000000, audioBitrate: 256000 }
+};
 let curTheme = THEMES.cyan;
+let themeName = "cyan";
 let eqMode = 1;
+let renderSettings = normalizeRender({});
+let qualityName = "medium";
 
 function applyTheme(name) {
-  curTheme = THEMES[name] || THEMES.cyan;
+  const key = THEMES[name] ? name : "cyan";
+  themeName = key;
+  curTheme = THEMES[key];
   document.documentElement.style.setProperty("--main", curTheme.main);
   document.documentElement.style.setProperty("--secondary", curTheme.secondary);
   document.documentElement.style.setProperty("--bg-dark", curTheme.bg);
   document.documentElement.style.setProperty("--glow", curTheme.glow);
   document.querySelectorAll("[data-theme]").forEach(button => {
-    button.classList.toggle("active", button.dataset.theme === name);
+    button.classList.toggle("active", button.dataset.theme === key);
   });
+}
+
+function setEqMode(mode) {
+  const value = clampNumber(mode, 1, 3, 1);
+  eqMode = Math.round(value);
+  document.querySelectorAll("[data-eq]").forEach(button => {
+    button.classList.toggle("active", Number.parseInt(button.dataset.eq, 10) === eqMode);
+  });
+}
+
+function setQuality(name) {
+  const preset = QUALITY_PRESETS[name] ? QUALITY_PRESETS[name] : QUALITY_PRESETS.medium;
+  qualityName = QUALITY_PRESETS[name] ? name : "medium";
+  renderSettings = normalizeRender(Object.assign({}, renderSettings, preset));
+  document.querySelectorAll("[data-quality]").forEach(button => {
+    button.classList.toggle("active", button.dataset.quality === qualityName);
+  });
+}
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text;
 }
 
 document.querySelectorAll("[data-theme]").forEach(button => {
   button.addEventListener("click", () => applyTheme(button.dataset.theme));
 });
 document.querySelectorAll("[data-eq]").forEach(button => {
+  button.addEventListener("click", () => setEqMode(Number.parseInt(button.dataset.eq, 10)));
+});
+document.querySelectorAll("[data-quality]").forEach(button => {
   button.addEventListener("click", () => {
-    eqMode = Number.parseInt(button.dataset.eq, 10);
-    document.querySelectorAll("[data-eq]").forEach(item => item.classList.toggle("active", item === button));
+    setQuality(button.dataset.quality);
+    setStatus(`JAKOŚĆ ${qualityName.toUpperCase()}: ${Math.round(renderSettings.videoBitrate / 1000000)} MB/s, ${renderSettings.fps} FPS.`);
   });
 });
 
-function setStatus(text) {
-  document.getElementById("status").textContent = text;
-}
-
-// --- 2. LYRICS / CUES PARSER ---
+// --- 2. LYRICS / CUES ---
 const DEFAULT_CUE = { t: 0, line: "System Gotowy. Wskaż katalog projektu.", haiku: "" };
 let CUES = [{ ...DEFAULT_CUE }];
 
-function parseLRC(lrcText) {
-  const timeTag = /\[(\d{1,3}):([0-5]\d)(?:[\.:](\d{1,3}))?\]/g;
-  const parsed = [];
-
-  for (const rawLine of String(lrcText || "").split(/\r?\n/)) {
-    timeTag.lastIndex = 0;
-    const tags = [];
-    let match;
-    while ((match = timeTag.exec(rawLine)) !== null) tags.push(match);
-    const text = rawLine.replace(timeTag, "").trim();
-    if (!tags.length || !text || /^(?:ar|ti|al|by|re|ve|offset):/i.test(text)) continue;
-
-    for (const tag of tags) {
-      const fraction = tag[3] ? Number(`0.${tag[3]}`) : 0;
-      parsed.push({
-        t: Number.parseInt(tag[1], 10) * 60 + Number.parseInt(tag[2], 10) + fraction,
-        line: text,
-        haiku: ""
-      });
-    }
-  }
-
-  parsed.sort((a, b) => a.t - b.t);
+function applyCues(text) {
+  const parsed = parseLRC(text);
   CUES = parsed.length ? parsed : [{ ...DEFAULT_CUE }];
   resetTerminal();
   return parsed.length;
-}
-
-// --- 3. AUDIO ENGINE & MEDIA RECORDER ---
-const audio = new Audio();
-let audioContext = null;
-let analyser = null;
-let mediaStreamDest = null;
-let audioObjectUrl = null;
-let recordingStream = null;
-let recordingMimeType = "video/webm";
-let mediaRecorder = null;
-let recordedChunks = [];
-let isRecording = false;
-let recordingBusy = false;
-const audioState = { fft: new Uint8Array(64), bass: 0, peak: 0 };
-
-function initAudio() {
-  if (audioContext) return audioContext;
-  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextCtor) throw new Error("Ta przeglądarka nie obsługuje Web Audio API.");
-
-  audioContext = new AudioContextCtor();
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 128;
-  const sourceNode = audioContext.createMediaElementSource(audio);
-  mediaStreamDest = audioContext.createMediaStreamDestination();
-  sourceNode.connect(analyser);
-  analyser.connect(audioContext.destination);
-  sourceNode.connect(mediaStreamDest);
-  return audioContext;
-}
-
-async function resumeAudio() {
-  const context = initAudio();
-  if (context.state === "suspended") await context.resume();
-}
-
-function readAudio() {
-  if (!analyser) return;
-  analyser.getByteFrequencyData(audioState.fft);
-  let low = 0;
-  for (let i = 0; i < 4; i++) low += audioState.fft[i];
-  audioState.bass = (low / 4) / 255;
-  if (audioState.bass > 0.55) audioState.peak = 1; else audioState.peak *= 0.88;
-}
-
-function formatTime(value) {
-  if (!Number.isFinite(value) || Number.isNaN(value)) return "00:00";
-  const minutes = Math.floor(value / 60);
-  const seconds = Math.floor(value % 60);
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function makeTerminalLine(cue, typed = false) {
@@ -312,6 +717,51 @@ function updateProgressUI() {
   const progress = document.getElementById("progress");
   progress.setAttribute("aria-valuenow", String(Math.round(percent)));
   document.getElementById("time").textContent = `${formatTime(current)} / ${formatTime(duration)}`;
+}
+
+// --- 3. AUDIO ENGINE & MEDIA RECORDER ---
+const audio = new Audio();
+let audioContext = null;
+let analyser = null;
+let mediaStreamDest = null;
+let audioObjectUrl = null;
+let recordingStream = null;
+let recordingMimeType = "video/webm";
+let recordingTrackInfo = { video: 0, audio: 0 };
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+let recordingBusy = false;
+const audioState = { fft: new Uint8Array(64), bass: 0, peak: 0 };
+
+function initAudio() {
+  if (audioContext) return audioContext;
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) throw new Error("Ta przeglądarka nie obsługuje Web Audio API.");
+
+  audioContext = new AudioContextCtor();
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 128;
+  const sourceNode = audioContext.createMediaElementSource(audio);
+  mediaStreamDest = audioContext.createMediaStreamDestination();
+  sourceNode.connect(analyser);
+  analyser.connect(audioContext.destination);
+  sourceNode.connect(mediaStreamDest);
+  return audioContext;
+}
+
+async function resumeAudio() {
+  const context = initAudio();
+  if (context.state === "suspended") await context.resume();
+}
+
+function readAudio() {
+  if (!analyser) return;
+  analyser.getByteFrequencyData(audioState.fft);
+  let low = 0;
+  for (let i = 0; i < 4; i++) low += audioState.fft[i];
+  audioState.bass = (low / 4) / 255;
+  if (audioState.bass > 0.55) audioState.peak = 1; else audioState.peak *= 0.88;
 }
 
 async function playAudio() {
@@ -374,6 +824,17 @@ function getSupportedMimeType() {
   return candidates.find(type => MediaRecorder.isTypeSupported(type)) || "";
 }
 
+function describeMimeType(type) {
+  const value = String(type || "").toLowerCase();
+  const codecs = [];
+  if (value.indexOf("vp9") >= 0) codecs.push("VP9");
+  else if (value.indexOf("vp8") >= 0) codecs.push("VP8");
+  else if (value.indexOf("h264") >= 0) codecs.push("H264");
+  if (value.indexOf("opus") >= 0) codecs.push("OPUS");
+  const container = value.indexOf("mp4") >= 0 ? "MP4" : "WEBM";
+  return codecs.length ? `${container}/${codecs.join("+")}` : container;
+}
+
 function releaseRecordingStream() {
   if (recordingStream) recordingStream.getTracks().forEach(track => track.stop());
   recordingStream = null;
@@ -392,12 +853,18 @@ async function startRecording() {
     if (!capture) throw new Error("Ta przeglądarka nie obsługuje przechwytywania canvas.");
 
     await resumeAudio();
-    const canvasStream = capture.call(canvas, 60);
+    const fps = clampNumber(renderSettings.fps, 1, 120, 60);
+    const canvasStream = capture.call(canvas, fps);
     const audioTracks = mediaStreamDest ? mediaStreamDest.stream.getAudioTracks() : [];
     if (!audioTracks.length) throw new Error("Nie udało się przygotować ścieżki audio.");
-    recordingStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+    const videoTracks = canvasStream.getVideoTracks();
+    recordingTrackInfo = { video: videoTracks.length, audio: audioTracks.length };
+    recordingStream = new MediaStream([...videoTracks, ...audioTracks]);
     recordingMimeType = getSupportedMimeType() || "video/webm";
-    const options = { videoBitsPerSecond: 12000000, audioBitsPerSecond: 192000 };
+    const options = {
+      videoBitsPerSecond: Math.round(renderSettings.videoBitrate),
+      audioBitsPerSecond: Math.round(renderSettings.audioBitrate)
+    };
     if (recordingMimeType) options.mimeType = recordingMimeType;
 
     mediaRecorder = new MediaRecorder(recordingStream, options);
@@ -414,7 +881,7 @@ async function startRecording() {
     audio.currentTime = 0;
     syncTerminalToTime(0);
     await audio.play();
-    setStatus("NAGRYWANIE WIDEO W TOKU...");
+    setStatus(`NAGRYWANIE ${canvas.width}x${canvas.height} @ ${Math.round(fps)} FPS — ${describeMimeType(recordingMimeType)}.`);
   } catch (error) {
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
       mediaRecorder.onstop = null;
@@ -446,10 +913,11 @@ function stopRecording() {
 
 function saveVideoFile() {
   const blob = new Blob(recordedChunks, { type: recordingMimeType || "video/webm" });
+  const tracks = recordingTrackInfo;
   releaseRecordingStream();
   mediaRecorder = null;
   if (!blob.size) {
-    setStatus("NIE UDAŁO SIĘ ZAPISAĆ PLIKU WIDEO.");
+    setStatus("NIE UDAŁO SIĘ ZAPISAĆ PLIKU WIDEO — PUSTY PLIK.");
     return;
   }
   const url = URL.createObjectURL(blob);
@@ -462,35 +930,36 @@ function saveVideoFile() {
   window.setTimeout(() => {
     link.remove();
     URL.revokeObjectURL(url);
-    setStatus("WIDEO ZAPISANE — FORMAT WEBM.");
+    const megabytes = (blob.size / (1024 * 1024)).toFixed(1);
+    const tracksLabel = `${tracks.video} V / ${tracks.audio} A`;
+    setStatus(`WIDEO ZAPISANE — ${megabytes} MB, ${describeMimeType(recordingMimeType)}, ŚCIEŻKI ${tracksLabel}.`);
   }, 100);
 }
 
-audio.addEventListener("loadedmetadata", updateProgressUI);
+audio.addEventListener("loadedmetadata", () => {
+  applySceneTimeline();
+  updateProgressUI();
+});
 audio.addEventListener("error", () => setStatus("NIE MOŻNA ODCZYTAĆ PLIKU AUDIO."));
 audio.addEventListener("ended", () => {
   if (isRecording) stopRecording();
   else if (audio.src) setStatus("ODTWARZANIE ZAKOŃCZONE.");
 });
 
-// --- 4. SKANER KATALOGU PROJEKTU ---
-let images = [];
-let activeImgIdx = -1;
-let prevImgIdx = -1;
-let transProgress = 1;
+// --- 4. SKANER KATALOGU PROJEKTU / MANIFEST ---
+let imageAssets = [];            // [{ name, img }]
+let manifestScenes = [];         // [{ name, start, end, duration, transition, img }]
+let scenePlan = [];              // ujednolicony plan renderowania
+let planDuration = -1;
+let projectManifest = null;
+let projectFiles = [];
+const projectMeta = { audio: "", cues: "", theme: "cyan", equalizer: 1 };
+let projectIssues = { reason: "no-manifest", error: "", missing: [], warnings: [] };
 let projectLoadToken = 0;
 
-function isAudioFile(file) {
-  return file.type.startsWith("audio/") || /\.(mp3|wav|ogg|oga|m4a|aac|flac)$/i.test(file.name);
-}
-function isImageFile(file) {
-  return file.type.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|avif)$/i.test(file.name);
-}
-function isCueFile(file) { return /\.lrc$/i.test(file.name); }
-
 function resetVisualState() {
-  activeImgIdx = -1;
-  prevImgIdx = -1;
+  activeScene = -1;
+  prevScene = -1;
   transProgress = 1;
 }
 
@@ -500,15 +969,16 @@ function clearCurrentAudio() {
   audio.load();
   if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
   audioObjectUrl = null;
+  planDuration = -1;
 }
 
-function loadImageFile(file, token) {
+function loadImageAsset(file, token) {
   return new Promise(resolve => {
     const url = URL.createObjectURL(file);
     const image = new Image();
     const finish = value => {
       URL.revokeObjectURL(url);
-      resolve(token === projectLoadToken ? value : null);
+      resolve(token === projectLoadToken && value ? { name: fileBaseName(file.name), img: value } : null);
     };
     image.onload = () => finish(image);
     image.onerror = () => finish(null);
@@ -525,42 +995,264 @@ function readTextFile(file) {
   });
 }
 
-async function loadProject(fileList) {
-  const files = Array.from(fileList || []);
-  if (!files.length) return;
+function sortFilesByName(files) {
+  return files.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function uniqueIssues(list) {
+  return Array.from(new Set(list.filter(Boolean)));
+}
+
+function applySceneTimeline() {
+  const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+  if (projectManifest && Array.isArray(projectManifest.scenes) && projectManifest.scenes.length) {
+    const result = buildSceneTimeline(projectManifest.scenes, { audioDuration: duration, defaultSceneSeconds: core.DEFAULT_SCENE_SECONDS });
+    const byName = new Map(imageAssets.map(asset => [String(asset.name).toLowerCase(), asset.img]));
+    manifestScenes = result.scenes.map(scene => ({
+      name: scene.image,
+      image: scene.image,
+      start: scene.start,
+      end: scene.end,
+      duration: scene.duration,
+      transition: scene.transition,
+      img: byName.get(fileBaseName(scene.image).toLowerCase()) || null
+    }));
+    if (result.warnings.length) projectIssues.warnings = uniqueIssues(projectIssues.warnings.concat(result.warnings));
+    if (!manifestScenes.some(scene => scene.img)) {
+      manifestScenes = [];
+      projectIssues.warnings = uniqueIssues(projectIssues.warnings.concat(["Żaden obraz z manifestu nie został znaleziony — użyto trybu automatycznego."]));
+    }
+  } else {
+    manifestScenes = [];
+  }
+  rebuildScenePlan(duration);
+}
+
+function rebuildScenePlan(duration) {
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  planDuration = Number.isFinite(duration) ? duration : 0;
+
+  if (manifestScenes.length) {
+    scenePlan = manifestScenes.map(scene => Object.assign({}, scene));
+    const last = scenePlan[scenePlan.length - 1];
+    if (last && (!Number.isFinite(last.end) || (total > 0 && last.end < total))) {
+      last.end = total > 0 ? total : last.end;
+      last.duration = Math.max(0, last.end - last.start);
+    }
+  } else if (imageAssets.length) {
+    const count = imageAssets.length;
+    scenePlan = imageAssets.map((asset, index) => ({
+      name: asset.name,
+      img: asset.img,
+      start: total > 0 ? (index * total) / count : 0,
+      end: total > 0 ? ((index + 1) * total) / count : Number.POSITIVE_INFINITY,
+      duration: total > 0 ? total / count : 0,
+      transition: "crossfade"
+    }));
+  } else {
+    scenePlan = [];
+  }
+  resetVisualState();
+}
+
+function reportMissingFiles() {
+  if (!projectManifest) return;
+  const resolved = resolveManifestFiles(
+    { audio: projectManifest.audio, cues: projectManifest.cues, scenes: manifestScenes.length ? manifestScenes : projectManifest.scenes },
+    projectFiles
+  );
+  projectIssues.missing = resolved.missing;
+  if (resolved.warnings.length) projectIssues.warnings = uniqueIssues(projectIssues.warnings.concat(resolved.warnings));
+}
+
+function composeLoadStatus(cueCount, skipped) {
+  const audioLabel = audio.src ? "AUDIO" : "BRAK AUDIO";
+  const sceneLabel = manifestScenes.length ? `MANIFEST: ${manifestScenes.length} SCEN` : `AUTO: ${imageAssets.length} GRAFIK`;
+  const cueLabel = cueCount ? `, ${cueCount} CUES` : "";
+
+  if (projectIssues.reason === "invalid-json" || projectIssues.reason === "invalid-shape") {
+    const detail = projectIssues.error ? ` (${projectIssues.error})` : "";
+    return `BŁĘDNY PROJECT.JSON${detail} — TRYB AUTOMATYCZNY: ${sceneLabel}${cueLabel}`;
+  }
+
+  let status = `PROJEKT ZAŁADOWANY: ${audioLabel}, ${sceneLabel}${cueLabel}`;
+  if (projectIssues.missing.length) {
+    const names = projectIssues.missing.slice(0, 3).map(item => item.name).join(", ");
+    const rest = projectIssues.missing.length > 3 ? ` +${projectIssues.missing.length - 3}` : "";
+    status += ` | ⚠ BRAK PLIKÓW (${projectIssues.missing.length}): ${names}${rest}`;
+  }
+  if (skipped > 0) status += ` | POMINIĘTO ${skipped} NIEOBSŁUGIWANYCH PLIKÓW`;
+  return status;
+}
+
+async function loadProject(fileList, options) {
+  const allFiles = Array.from(fileList || []);
+  if (!allFiles.length) return;
+  const skipped = (options && Number(options.skipped) > 0) ? Math.round(Number(options.skipped)) : 0;
+
   const token = ++projectLoadToken;
   if (isRecording) stopRecording();
   clearCurrentAudio();
-  images = [];
+  imageAssets = [];
+  manifestScenes = [];
+  scenePlan = [];
+  projectManifest = null;
+  projectIssues = { reason: "no-manifest", error: "", missing: [], warnings: [] };
+  projectMeta.audio = "";
+  projectMeta.cues = "";
   resetVisualState();
   CUES = [{ ...DEFAULT_CUE }];
   resetTerminal();
   setStatus("SKANOWANIE KATALOGU PROJEKTU...");
 
-  const sortedFiles = files.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-  const audioFile = sortedFiles.find(isAudioFile);
-  const cueFile = sortedFiles.find(isCueFile);
-  const imageFiles = sortedFiles.filter(isImageFile);
+  const files = sortFilesByName(allFiles);
+  projectFiles = files;
+
+  const manifestFile = files.find(isProjectFile);
+  const manifestRaw = manifestFile ? await readTextFile(manifestFile) : null;
+  if (token !== projectLoadToken) return;
+
+  let audioFile = files.find(isAudioFile) || null;
+  let cueFile = files.find(isCueFile) || null;
+  const parsed = manifestRaw !== null ? parseProjectManifest(manifestRaw) : null;
+
+  if (parsed && parsed.ok) {
+    projectManifest = parsed.manifest;
+    projectIssues = { reason: parsed.reason, error: "", missing: [], warnings: parsed.warnings.slice() };
+    if (parsed.manifest.audio) {
+      const found = findFileByName(files, parsed.manifest.audio);
+      if (found) audioFile = found;
+    }
+    if (parsed.manifest.cues) {
+      const found = findFileByName(files, parsed.manifest.cues);
+      if (found) cueFile = found;
+    }
+    if (parsed.manifest.theme) applyTheme(parsed.manifest.theme);
+    if (parsed.manifest.equalizer) setEqMode(parsed.manifest.equalizer);
+    renderSettings = normalizeRender(parsed.manifest.render);
+  } else if (parsed) {
+    projectIssues = {
+      reason: parsed.reason,
+      error: parsed.error || "Niepoprawny manifest.",
+      missing: [],
+      warnings: ["Manifest jest niepoprawny — użyto trybu automatycznego."]
+    };
+  }
 
   if (audioFile) {
     audioObjectUrl = URL.createObjectURL(audioFile);
     audio.src = audioObjectUrl;
     audio.load();
+    projectMeta.audio = fileBaseName(audioFile.name);
+    if (projectManifest && projectManifest.audio && fileBaseName(projectManifest.audio).toLowerCase() !== fileBaseName(audioFile.name).toLowerCase()) {
+      projectIssues.warnings = uniqueIssues(projectIssues.warnings.concat([`Audio z manifestu (${projectManifest.audio}) nie istnieje — użyto ${projectMeta.audio}.`]));
+    }
+  }
+  if (cueFile) {
+    projectMeta.cues = fileBaseName(cueFile.name);
+    if (projectManifest && projectManifest.cues && fileBaseName(projectManifest.cues).toLowerCase() !== fileBaseName(cueFile.name).toLowerCase()) {
+      projectIssues.warnings = uniqueIssues(projectIssues.warnings.concat([`Plik LRC z manifestu (${projectManifest.cues}) nie istnieje — użyto ${projectMeta.cues}.`]));
+    }
   }
 
-  const [loadedImages, lrcText] = await Promise.all([
-    Promise.all(imageFiles.map(file => loadImageFile(file, token))),
+  const imageFiles = files.filter(isImageFile);
+  const [loadedAssets, lrcText] = await Promise.all([
+    Promise.all(imageFiles.map(file => loadImageAsset(file, token))),
     cueFile ? readTextFile(cueFile) : Promise.resolve("")
   ]);
   if (token !== projectLoadToken) return;
 
-  images = loadedImages.filter(Boolean);
-  resetVisualState();
-  const cueCount = lrcText ? parseLRC(lrcText) : 0;
-  const audioLabel = audioFile ? "AUDIO" : "BRAK AUDIO";
-  const cueLabel = cueFile ? `, ${cueCount} CUES` : "";
-  setStatus(`PROJEKT ZAŁADOWANY: ${audioLabel} + ${images.length} GRAFIK${cueLabel}`);
+  imageAssets = loadedAssets.filter(Boolean);
+  applySceneTimeline();
+  reportMissingFiles();
+
+  const cueCount = lrcText ? applyCues(lrcText) : 0;
+  projectMeta.theme = themeName;
+  projectMeta.equalizer = eqMode;
+  setStatus(composeLoadStatus(cueCount, skipped));
 }
+
+// --- DRAG AND DROP ---
+function collectDroppedFiles(dataTransfer) {
+  const items = dataTransfer && dataTransfer.items ? Array.from(dataTransfer.items) : [];
+  const entries = items
+    .map(item => (item && typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null))
+    .filter(Boolean);
+  if (!entries.length) return Promise.resolve(Array.from((dataTransfer && dataTransfer.files) || []));
+
+  const files = [];
+  const readDirectory = reader => new Promise(resolve => {
+    const collected = [];
+    const step = () => reader.readEntries(batch => {
+      if (!batch || !batch.length) { resolve(collected); return; }
+      collected.push(...batch);
+      step();
+    }, () => resolve(collected));
+    step();
+  });
+  const walk = entry => new Promise(resolve => {
+    if (!entry) { resolve(); return; }
+    if (entry.isFile) {
+      entry.file(file => { files.push(file); resolve(); }, () => resolve());
+      return;
+    }
+    if (!entry.isDirectory) { resolve(); return; }
+    readDirectory(entry.createReader())
+      .then(children => children.reduce((chain, child) => chain.then(() => walk(child)), Promise.resolve()))
+      .then(resolve, () => resolve());
+  });
+
+  return entries
+    .reduce((chain, entry) => chain.then(() => walk(entry)), Promise.resolve())
+    .then(() => files);
+}
+
+function isSupportedDropFile(file) {
+  return isAudioFile(file) || isImageFile(file) || isCueFile(file) || isProjectFile(file);
+}
+
+async function handleDroppedFiles(dataTransfer) {
+  setStatus("SKANOWANIE KATALOGU PROJEKTU...");
+  const dropped = await collectDroppedFiles(dataTransfer);
+  const supported = dropped.filter(isSupportedDropFile);
+  const rejected = dropped.length - supported.length;
+  if (!supported.length) {
+    setStatus(rejected ? `POMINIĘTO ${rejected} PLIKÓW — BRAK AUDIO, GRAFIK, LRC LUB PROJECT.JSON.` : "NIE WYKRYTO PLIKÓW.");
+    return;
+  }
+  if (rejected) setStatus(`SKANOWANIE: POMINIĘTO ${rejected} NIEOBSŁUGIWANYCH PLIKÓW.`);
+  await loadProject(supported, { skipped: rejected });
+}
+
+let dragDepth = 0;
+function setDragging(state) {
+  document.body.classList.toggle("dragging", state);
+  document.getElementById("dropzone").setAttribute("aria-hidden", state ? "false" : "true");
+}
+window.addEventListener("dragenter", event => {
+  if (!event.dataTransfer) return;
+  event.preventDefault();
+  dragDepth++;
+  setDragging(true);
+});
+window.addEventListener("dragover", event => {
+  if (!event.dataTransfer) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("dragleave", event => {
+  if (!event.dataTransfer) return;
+  event.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) setDragging(false);
+});
+window.addEventListener("drop", event => {
+  if (!event.dataTransfer) return;
+  event.preventDefault();
+  dragDepth = 0;
+  setDragging(false);
+  void handleDroppedFiles(event.dataTransfer);
+});
 
 document.getElementById("loadFolder").addEventListener("click", () => document.getElementById("folderInput").click());
 document.getElementById("folderInput").addEventListener("change", event => {
@@ -568,6 +1260,41 @@ document.getElementById("folderInput").addEventListener("change", event => {
   event.target.value = "";
   void loadProject(files);
 });
+
+// --- EKSPORT project.json ---
+function downloadTextFile(name, text, mimeType) {
+  const blob = new Blob([text], { type: mimeType || "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.style.display = "none";
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  window.setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 100);
+}
+
+function exportProjectJson() {
+  const scenes = scenePlan
+    .filter(scene => scene.name)
+    .map(scene => ({ image: scene.name, start: scene.start, duration: scene.duration, transition: scene.transition }));
+  const json = serializeProject({
+    audio: projectMeta.audio,
+    cues: projectMeta.cues,
+    theme: themeName,
+    equalizer: eqMode,
+    render: renderSettings,
+    scenes
+  });
+  downloadTextFile("project.json", json, "application/json");
+  const location = projectMeta.audio ? `KATALOG Z ${projectMeta.audio}` : "KATALOG PROJEKTU";
+  setStatus(`ZAPISANO project.json (${scenes.length} SCEN) — WRZUĆ PLIK DO: ${location}.`);
+}
+
+document.getElementById("btn-export").addEventListener("click", exportProjectJson);
 
 // --- 5. RENDERER CANVAS ---
 const canvas = document.getElementById("visualizer");
@@ -578,6 +1305,9 @@ let cols = 0;
 let rows = 0;
 let asciiBuffer = new Float32Array(0);
 let asciiKind = new Uint8Array(0);
+let activeScene = -1;
+let prevScene = -1;
+let transProgress = 1;
 const cellW = 8;
 const cellH = 11;
 const glyphs = " .,:;i1tfLCG08@".split("");
@@ -609,6 +1339,24 @@ for (let i = 0; i < 1800; i++) {
   });
 }
 
+function findSceneIndex(time) {
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < scenePlan.length; i++) {
+    if (!scenePlan[i].img) continue;
+    if (first < 0) first = i;
+    last = i;
+  }
+  if (first < 0) return -1;
+  for (let i = 0; i < scenePlan.length; i++) {
+    const scene = scenePlan[i];
+    if (!scene.img) continue;
+    if (time >= scene.start && time < scene.end) return i;
+  }
+  if (scenePlan[last] && time >= scenePlan[last].end) return last;
+  return first;
+}
+
 function drawCoverImage(image) {
   if (!image || !image.width || !image.height || !width || !height) return;
   const ratio = image.width / image.height;
@@ -629,37 +1377,43 @@ function drawCoverImage(image) {
   ctx.drawImage(image, x, y, drawWidth, drawHeight);
 }
 
-function drawBackground() {
+function easeInOut(value) {
+  return value < 0.5 ? 2 * value * value : 1 - Math.pow(-2 * value + 2, 2) / 2;
+}
+
+function drawBackground(dt) {
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = curTheme.bg;
   ctx.fillRect(0, 0, width, height);
-  if (!images.length) return;
+  if (!scenePlan.length) return;
 
-  const ratio = Number.isFinite(audio.duration) && audio.duration > 0
-    ? Math.min(0.999999, (audio.currentTime || 0) / audio.duration)
-    : 0;
-  const targetIndex = Math.min(images.length - 1, Math.floor(ratio * images.length));
-  if (targetIndex !== activeImgIdx) {
-    prevImgIdx = activeImgIdx;
-    activeImgIdx = targetIndex;
-    transProgress = 0;
+  const target = findSceneIndex(audio.currentTime || 0);
+  if (target < 0) return;
+
+  if (target !== activeScene) {
+    prevScene = activeScene;
+    activeScene = target;
+    transProgress = scenePlan[target].transition === "cut" ? 1 : 0;
   }
 
-  if (transProgress < 1) {
-    transProgress = Math.min(1, transProgress + 0.02);
-    if (prevImgIdx >= 0) drawCoverImage(images[prevImgIdx]);
-    ctx.globalAlpha = transProgress;
-    drawCoverImage(images[activeImgIdx]);
+  if (transProgress < 1 && prevScene >= 0 && prevScene !== activeScene && scenePlan[prevScene] && scenePlan[prevScene].img) {
+    transProgress = Math.min(1, transProgress + dt / Math.max(0.0001, renderSettings.transitionSeconds));
+    drawCoverImage(scenePlan[prevScene].img);
+    ctx.globalAlpha = easeInOut(transProgress);
+    drawCoverImage(scenePlan[activeScene].img);
+    ctx.globalAlpha = 1;
   } else {
-    drawCoverImage(images[activeImgIdx] || images[0]);
+    drawCoverImage(scenePlan[activeScene].img);
   }
 
-  ctx.globalCompositeOperation = "color";
-  ctx.fillStyle = curTheme.main;
-  ctx.globalAlpha = 0.9;
-  ctx.fillRect(0, 0, width, height);
-  ctx.globalCompositeOperation = "source-over";
+  if (renderSettings.overlay > 0) {
+    ctx.globalCompositeOperation = "color";
+    ctx.fillStyle = curTheme.main;
+    ctx.globalAlpha = renderSettings.overlay;
+    ctx.fillRect(0, 0, width, height);
+    ctx.globalCompositeOperation = "source-over";
+  }
   ctx.fillStyle = "rgba(0,0,0,0.7)";
   ctx.globalAlpha = 1;
   ctx.fillRect(0, 0, width, height);
@@ -668,7 +1422,8 @@ function drawBackground() {
 function drawAsciiCore(time) {
   asciiBuffer.fill(0);
   asciiKind.fill(0);
-  const scale = 1 + audioState.bass * 0.5 + audioState.peak * 0.2;
+  const intensity = clampNumber(renderSettings.asciiIntensity, 0, 2, 1);
+  const scale = 1 + (audioState.bass * 0.5 + audioState.peak * 0.2) * intensity;
   const rotateY = time * 0.5;
   const rotateX = time * 0.2;
 
@@ -683,7 +1438,7 @@ function drawAsciiCore(time) {
     const screenY = Math.floor((py * 0.25 + 0.5) * rows);
     if (screenX < 0 || screenX >= cols || screenY < 0 || screenY >= rows) continue;
     const index = screenY * cols + screenX;
-    const light = Math.max(0, Math.min(1, (z2 + 1.7) / 2.8));
+    const light = Math.max(0, Math.min(1, ((z2 + 1.7) / 2.8) * intensity));
     if (light > asciiBuffer[index]) {
       asciiBuffer[index] = light;
       asciiKind[index] = point.g;
@@ -705,6 +1460,41 @@ function drawAsciiCore(time) {
   ctx.globalAlpha = 1;
 }
 
+function truncateText(value, limit) {
+  const text = String(value || "");
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function issueLines() {
+  const lines = [];
+  if (projectIssues.reason === "invalid-json" || projectIssues.reason === "invalid-shape") {
+    lines.push(`⚠ PROJECT.JSON: ${truncateText(projectIssues.error || "niepoprawny manifest", 70)}`);
+  }
+  if (projectIssues.missing.length) {
+    const names = projectIssues.missing.map(item => item.name).join(", ");
+    lines.push(`⚠ BRAK PLIKÓW (${projectIssues.missing.length}): ${truncateText(names, 80)}`);
+  }
+  for (const warning of projectIssues.warnings.slice(0, 2)) lines.push(`⚠ ${truncateText(warning, 80)}`);
+  return lines.slice(0, 4);
+}
+
+function drawIssues(context, canvasWidth, bottomY, margin) {
+  const lines = issueLines();
+  if (!lines.length) return;
+  context.font = "bold 10px 'Courier New', monospace";
+  context.textAlign = "left";
+  context.textBaseline = "bottom";
+  const lineHeight = 13;
+  lines.forEach((line, index) => {
+    const y = bottomY - (lines.length - index) * lineHeight;
+    const boxWidth = Math.min(canvasWidth - margin * 2, context.measureText(line).width + 12);
+    context.fillStyle = "rgba(0, 0, 0, 0.6)";
+    context.fillRect(margin, y - 11, boxWidth, 13);
+    context.fillStyle = "#ffaa00";
+    context.fillText(line, margin + 6, y);
+  });
+}
+
 function drawHUD(context, canvasWidth, canvasHeight) {
   const margin = Math.max(12, Math.min(20, canvasWidth * 0.02));
   const compact = canvasWidth < 760;
@@ -718,97 +1508,105 @@ function drawHUD(context, canvasWidth, canvasHeight) {
   const eqY = compact ? startY + panelHeight + gap : startY;
   const eqWidth = Math.max(1, canvasWidth - eqX - margin);
 
-  context.fillStyle = "rgba(0, 5, 10, 0.45)";
-  context.fillRect(termX, startY, termWidth, panelHeight);
-  context.strokeStyle = curTheme.main;
-  context.lineWidth = 1;
-  context.strokeRect(termX, startY, termWidth, panelHeight);
-  context.fillStyle = curTheme.main;
-  context.fillRect(termX, startY, 4, panelHeight);
-  context.font = "bold 11px 'Courier New', monospace";
-  context.textAlign = "left";
-  context.textBaseline = "top";
+  drawIssues(context, canvasWidth, startY - 6, margin);
 
-  let lineY = startY + 12;
-  for (const line of terminalLines) {
-    if (line.charsTyped < line.maxChars) line.charsTyped += 0.8;
-    const visibleText = line.text.substring(0, Math.floor(line.charsTyped));
-    context.fillStyle = "rgba(255, 255, 255, 0.7)";
-    context.fillText(line.prompt, termX + 14, lineY);
-    const promptWidth = context.measureText(line.prompt).width;
+  if (renderSettings.showTerminal) {
+    context.fillStyle = "rgba(0, 5, 10, 0.45)";
+    context.fillRect(termX, startY, termWidth, panelHeight);
+    context.strokeStyle = curTheme.main;
+    context.lineWidth = 1;
+    context.strokeRect(termX, startY, termWidth, panelHeight);
     context.fillStyle = curTheme.main;
-    context.fillText(visibleText, termX + 14 + promptWidth, lineY);
-    const textWidth = context.measureText(visibleText).width;
-    if (line === terminalLines[terminalLines.length - 1] && line.charsTyped < line.maxChars) {
-      context.fillText("█", termX + 14 + promptWidth + textWidth + 2, lineY);
-    }
-    if (line.charsTyped >= line.maxChars && line.haiku) {
-      context.fillStyle = "rgba(255, 255, 255, 0.4)";
-      context.font = "italic 10px 'Courier New'";
-      context.fillText(line.haiku, termX + 14 + promptWidth + textWidth + 15, lineY + 1);
-      context.font = "bold 11px 'Courier New', monospace";
-    }
-    lineY += 22;
-  }
+    context.fillRect(termX, startY, 4, panelHeight);
+    context.font = "bold 11px 'Courier New', monospace";
+    context.textAlign = "left";
+    context.textBaseline = "top";
 
-  const emptyPrompt = `sys@[${formatTime(audio.currentTime || 0)}]:~$ `;
-  const promptY = Math.min(startY + panelHeight - 14, startY + 12 + terminalLines.length * 22);
-  if (!terminalLines.length || terminalLines[terminalLines.length - 1].charsTyped >= terminalLines[terminalLines.length - 1].maxChars) {
-    context.fillStyle = "rgba(255, 255, 255, 0.7)";
-    context.fillText(emptyPrompt, termX + 14, promptY);
-    if (Math.floor(Date.now() / 400) % 2 === 0) {
+    let lineY = startY + 12;
+    for (const line of terminalLines) {
+      if (line.charsTyped < line.maxChars) line.charsTyped += 0.8;
+      const visibleText = line.text.substring(0, Math.floor(line.charsTyped));
+      context.fillStyle = "rgba(255, 255, 255, 0.7)";
+      context.fillText(line.prompt, termX + 14, lineY);
+      const promptWidth = context.measureText(line.prompt).width;
       context.fillStyle = curTheme.main;
-      context.fillText("█", termX + 14 + context.measureText(emptyPrompt).width + 2, promptY);
-    }
-  }
-
-  context.fillStyle = "rgba(0, 5, 10, 0.45)";
-  context.fillRect(eqX, eqY, eqWidth, panelHeight);
-  context.strokeStyle = curTheme.main;
-  context.strokeRect(eqX, eqY, eqWidth, panelHeight);
-  if (!analyser) return;
-
-  const bars = 64;
-  const barWidth = eqWidth / bars;
-  const eqBaseY = eqY + panelHeight - 10;
-  const maxBarHeight = panelHeight - 20;
-  context.fillStyle = curTheme.main;
-  context.shadowBlur = 6;
-  context.shadowColor = curTheme.main;
-  for (let i = 0; i < bars; i++) {
-    const barHeight = (audioState.fft[i] / 255) * maxBarHeight;
-    const x = eqX + i * barWidth;
-    if (eqMode === 1) {
-      const segments = Math.floor(barHeight / 5);
-      for (let segment = 0; segment < segments; segment++) {
-        context.globalAlpha = 0.85 - (segment / Math.max(1, segments)) * 0.3;
-        context.fillRect(x + 2, eqBaseY - segment * 5 - 3, Math.max(1, barWidth - 4), 3);
+      context.fillText(visibleText, termX + 14 + promptWidth, lineY);
+      const textWidth = context.measureText(visibleText).width;
+      if (line === terminalLines[terminalLines.length - 1] && line.charsTyped < line.maxChars) {
+        context.fillText("█", termX + 14 + promptWidth + textWidth + 2, lineY);
       }
-    } else if (eqMode === 2) {
-      context.globalAlpha = 0.6;
-      context.fillRect(x + 1, eqY + panelHeight / 2 - barHeight / 2, Math.max(1, barWidth - 2), barHeight);
-    } else {
-      const dots = Math.floor(barHeight / 5);
-      for (let dot = 0; dot < dots; dot++) {
-        context.globalAlpha = 0.8 - (dot / Math.max(1, dots)) * 0.5;
-        context.beginPath();
-        context.arc(x + barWidth / 2, eqBaseY - dot * 5, 1.5, 0, Math.PI * 2);
-        context.fill();
+      if (line.charsTyped >= line.maxChars && line.haiku) {
+        context.fillStyle = "rgba(255, 255, 255, 0.4)";
+        context.font = "italic 10px 'Courier New'";
+        context.fillText(line.haiku, termX + 14 + promptWidth + textWidth + 15, lineY + 1);
+        context.font = "bold 11px 'Courier New', monospace";
+      }
+      lineY += 22;
+    }
+
+    const emptyPrompt = `sys@[${formatTime(audio.currentTime || 0)}]:~$ `;
+    const promptY = Math.min(startY + panelHeight - 14, startY + 12 + terminalLines.length * 22);
+    if (!terminalLines.length || terminalLines[terminalLines.length - 1].charsTyped >= terminalLines[terminalLines.length - 1].maxChars) {
+      context.fillStyle = "rgba(255, 255, 255, 0.7)";
+      context.fillText(emptyPrompt, termX + 14, promptY);
+      if (Math.floor(Date.now() / 400) % 2 === 0) {
+        context.fillStyle = curTheme.main;
+        context.fillText("█", termX + 14 + context.measureText(emptyPrompt).width + 2, promptY);
       }
     }
   }
-  context.shadowBlur = 0;
-  context.globalAlpha = 1;
+
+  if (renderSettings.showEqualizer) {
+    context.fillStyle = "rgba(0, 5, 10, 0.45)";
+    context.fillRect(eqX, eqY, eqWidth, panelHeight);
+    context.strokeStyle = curTheme.main;
+    context.strokeRect(eqX, eqY, eqWidth, panelHeight);
+    if (!analyser) return;
+
+    const bars = 64;
+    const barWidth = eqWidth / bars;
+    const eqBaseY = eqY + panelHeight - 10;
+    const maxBarHeight = panelHeight - 20;
+    context.fillStyle = curTheme.main;
+    context.shadowBlur = 6;
+    context.shadowColor = curTheme.main;
+    for (let i = 0; i < bars; i++) {
+      const barHeight = (audioState.fft[i] / 255) * maxBarHeight;
+      const x = eqX + i * barWidth;
+      if (eqMode === 1) {
+        const segments = Math.floor(barHeight / 5);
+        for (let segment = 0; segment < segments; segment++) {
+          context.globalAlpha = 0.85 - (segment / Math.max(1, segments)) * 0.3;
+          context.fillRect(x + 2, eqBaseY - segment * 5 - 3, Math.max(1, barWidth - 4), 3);
+        }
+      } else if (eqMode === 2) {
+        context.globalAlpha = 0.6;
+        context.fillRect(x + 1, eqY + panelHeight / 2 - barHeight / 2, Math.max(1, barWidth - 2), barHeight);
+      } else {
+        const dots = Math.floor(barHeight / 5);
+        for (let dot = 0; dot < dots; dot++) {
+          context.globalAlpha = 0.8 - (dot / Math.max(1, dots)) * 0.5;
+          context.beginPath();
+          context.arc(x + barWidth / 2, eqBaseY - dot * 5, 1.5, 0, Math.PI * 2);
+          context.fill();
+        }
+      }
+    }
+    context.shadowBlur = 0;
+    context.globalAlpha = 1;
+  }
 }
 
 function drawCRT() {
+  const strength = clampNumber(renderSettings.crt, 0, 1, 1);
+  if (strength <= 0) return;
   ctx.globalAlpha = 1;
   const gradient = ctx.createRadialGradient(width / 2, height / 2, height * 0.4, width / 2, height / 2, height);
   gradient.addColorStop(0, "rgba(0,0,0,0)");
-  gradient.addColorStop(1, "rgba(0,0,0,0.85)");
+  gradient.addColorStop(1, `rgba(0,0,0,${0.85 * strength})`);
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(0,0,0,0.2)";
+  ctx.fillStyle = `rgba(0,0,0,${0.2 * strength})`;
   for (let y = 0; y < height; y += 4) ctx.fillRect(0, y, width, 1);
 }
 
@@ -829,6 +1627,8 @@ window.addEventListener("keydown", event => {
     if (audio.paused) void playAudio(); else audio.pause();
   } else if (event.key.toLowerCase() === "r") {
     if (isRecording) stopRecording(); else void startRecording();
+  } else if (event.key.toLowerCase() === "e") {
+    exportProjectJson();
   }
 });
 
@@ -838,11 +1638,17 @@ window.addEventListener("beforeunload", () => {
 });
 
 // --- 7. MAIN LOOP ---
+let lastFrameMs = 0;
 function render(timeMs) {
+  const dt = lastFrameMs ? Math.min(0.1, Math.max(0, (timeMs - lastFrameMs) / 1000)) : 0.016;
+  lastFrameMs = timeMs;
+
   updateProgressUI();
   readAudio();
   updateTerminal();
-  drawBackground();
+  const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+  if (duration !== planDuration) rebuildScenePlan(duration);
+  drawBackground(dt);
   drawAsciiCore(timeMs * 0.001);
   drawHUD(ctx, width, height);
   drawCRT();
@@ -850,6 +1656,8 @@ function render(timeMs) {
 }
 
 applyTheme("cyan");
+setEqMode(1);
+setQuality("medium");
 window.requestAnimationFrame(render);
 </script>
 </body>
